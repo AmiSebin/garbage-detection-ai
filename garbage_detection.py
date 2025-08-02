@@ -1,6 +1,3 @@
-# 실행 전 라이브러리 설치 필요
-# pip install ultralytics opencv-python torch torchvision
-
 # 다음 명령어로 실행
 # source venv/bin/activate && python garbage_detection.py
 
