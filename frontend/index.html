@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>하수도 막힘 감지 시스템</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            color: #666;
+        }
+
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 15px;
+            border-radius: 25px;
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+            z-index: 1000;
+            transition: all 0.3s ease;
+        }
+
+        .connected {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.3);
+        }
+
+        .disconnected {
+            background: linear-gradient(45deg, #f44336, #da190b);
+            box-shadow: 0 4px 15px rgba(244, 67, 54, 0.3);
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.15);
+        }
+
+        .card h3 {
+            font-size: 1.3rem;
+            margin-bottom: 20px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .risk-safe {
+            border-left: 5px solid #4CAF50;
+            background: linear-gradient(135deg, #ffffff 0%, #f8fff8 100%);
+        }
+
+        .risk-warning {
+            border-left: 5px solid #FF9800;
+            background: linear-gradient(135deg, #ffffff 0%, #fffaf0 100%);
+        }
+
+        .risk-danger {
+            border-left: 5px solid #f44336;
+            background: linear-gradient(135deg, #ffffff 0%, #fff5f5 100%);
+        }
+
+        .metric {
+            font-size: 2.2rem;
+            font-weight: bold;
+            margin: 15px 0;
+            color: #2c3e50;
+        }
+
+        .label {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .blockage-info {
+            background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .blockage-metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 8px 0;
+            font-size: 0.95rem;
+        }
+
+        .blockage-value {
+            font-weight: bold;
+            color: #5e35b1;
+        }
+
+        .video-container {
+            text-align: center;
+        }
+
+        .video-feed {
+            width: 100%;
+            max-width: 800px;
+            height: auto;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+            border: 3px solid #fff;
+        }
+
+        .alerts-container {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .alert {
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 10px;
+            border-left: 4px solid;
+            transition: all 0.3s ease;
+        }
+
+        .alert:hover {
+            transform: translateX(5px);
+        }
+
+        .alert-warning {
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+            border-left-color: #FF9800;
+            color: #856404;
+        }
+
+        .alert-danger {
+            background: linear-gradient(135deg, #f8d7da 0%, #fab1a0 100%);
+            border-left-color: #f44336;
+            color: #721c24;
+        }
+
+        .alert strong {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+        }
+
+        #log {
+            height: 250px;
+            overflow-y: auto;
+            background: linear-gradient(135deg, #263238 0%, #37474f 100%);
+            color: #e8f5e8;
+            padding: 15px;
+            border-radius: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.4;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        #log::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #log::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+        }
+
+        #log::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.3);
+            border-radius: 4px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 15px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 10px;
+            transition: all 0.3s ease;
+        }
+
+        .stat-item:hover {
+            transform: scale(1.05);
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #495057;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .metric {
+                font-size: 1.8rem;
+            }
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.05);
+            }
+            100% {
+                transform: scale(1);
+            }
+        }
+
+        /* AI 분석 스타일 */
+        .ai-analysis {
+            margin-top: 20px;
+            padding: 15px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 10px;
+            border-left: 4px solid #007bff;
+        }
+
+        .ai-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .ai-header h4 {
+            margin: 0;
+            color: #007bff;
+            font-size: 1rem;
+        }
+
+        .ai-confidence {
+            background: #007bff;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .ai-reasoning {
+            font-size: 0.9rem;
+            color: #495057;
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+
+        .ai-recommendations {
+            margin-bottom: 10px;
+        }
+
+        .ai-recommendations strong {
+            color: #495057;
+            font-size: 0.9rem;
+        }
+
+        .ai-recommendations ul {
+            margin: 5px 0 0 0;
+            padding-left: 20px;
+        }
+
+        .ai-recommendations li {
+            font-size: 0.85rem;
+            color: #6c757d;
+            margin-bottom: 3px;
+        }
+
+        .ai-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 0.85rem;
+        }
+
+        .ai-metric {
+            display: flex;
+            justify-content: space-between;
+            color: #6c757d;
+        }
+
+        .ai-metric span:last-child {
+            font-weight: bold;
+            color: #495057;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚰 하수도 막힘 감지 시스템</h1>
+            <p>AI 기반 실시간 모니터링 및 분석 대시보드</p>
+        </div>
+        
+        <div class="connection-status" id="connection-status">
+            <span class="loading"></span> 연결 중...
+        </div>
+        
+        <div class="main-grid">
+            <!-- 왼쪽: 상태 정보 -->
+            <div>
+                <div class="status-grid">
+                    <div class="card" id="status-card">
+                        <h3>📊 현재 상태</h3>
+                        <div class="label">위험도</div>
+                        <div class="metric" id="risk-score">--</div>
+                        <div class="label">파이프 상태</div>
+                        <div class="metric" id="pipe-status" style="font-size: 1.2rem;">--</div>
+                        
+                        <div class="blockage-info">
+                            <div class="blockage-metric">
+                                <span>막힘률:</span>
+                                <span class="blockage-value" id="blockage-percentage">--%</span>
+                            </div>
+                            <div class="blockage-metric">
+                                <span>흐름 제한:</span>
+                                <span class="blockage-value" id="flow-restriction">--</span>
+                            </div>
+                            <div class="blockage-metric">
+                                <span>쓰레기량:</span>
+                                <span class="blockage-value" id="garbage-volume">--cm³</span>
+                            </div>
+                            <div class="blockage-metric">
+                                <span>축적 영역:</span>
+                                <span class="blockage-value" id="accumulated-areas">--개</span>
+                            </div>
+                        </div>
+                        
+                        <!-- AI 분석 정보 -->
+                        <div class="ai-analysis" id="ai-analysis" style="display: none;">
+                            <div class="ai-header">
+                                <h4>🤖 AI 분석</h4>
+                                <span class="ai-confidence" id="ai-confidence">--</span>
+                            </div>
+                            <div class="ai-reasoning" id="ai-reasoning">--</div>
+                            <div class="ai-recommendations" id="ai-recommendations">
+                                <strong>권장사항:</strong>
+                                <ul id="ai-recommendations-list"></ul>
+                            </div>
+                            <div class="ai-metrics">
+                                <div class="ai-metric">
+                                    <span>오탐지 확률:</span>
+                                    <span id="false-positive-prob">--%</span>
+                                </div>
+                                <div class="ai-metric">
+                                    <span>추세:</span>
+                                    <span id="trend-analysis">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <h3>📈 통계</h3>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <div class="stat-value" id="total-detections">--</div>
+                                <div class="stat-label">총 감지</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value" id="alerts-today">--</div>
+                                <div class="stat-label">오늘 알림</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <h3>🔔 최근 알림</h3>
+                        <div class="alerts-container" id="recent-alerts">
+                            알림이 없습니다.
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 오른쪽: 비디오 스트림 -->
+            <div>
+                <div class="card video-container">
+                    <h3>📹 실시간 카메라 (CCTV)</h3>
+                    <img id="video-feed" class="video-feed" src="http://localhost:8000/video_feed" alt="실시간 카메라 피드" />
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h3>📝 실시간 로그</h3>
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        // 설정
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        let ws = null;
+        let reconnectInterval = null;
+        let lastUpdateTime = Date.now();
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.hostname}:8000/ws`);
+            
+            ws.onopen = function(event) {
+                console.log('WebSocket 연결됨');
+                document.getElementById('connection-status').innerHTML = '✅ 연결됨';
+                document.getElementById('connection-status').className = 'connection-status connected';
+                
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
+                
+                addLog('🔗 서버 연결 성공');
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    // ping/pong 메시지 처리
+                    if (event.data === "pong") {
+                        lastUpdateTime = Date.now();
+                        return;
+                    }
+                    
+                    // JSON 메시지 처리
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                    lastUpdateTime = Date.now();
+                } catch (error) {
+                    console.error('WebSocket 메시지 파싱 오류:', error);
+                    addLog('❌ 메시지 파싱 오류: ' + error.message);
+                }
+            };
+            
+            ws.onclose = function(event) {
+                console.log('WebSocket 연결 끊어짐');
+                document.getElementById('connection-status').innerHTML = '❌ 연결 끊어짐';
+                document.getElementById('connection-status').className = 'connection-status disconnected';
+                
+                if (!reconnectInterval) {
+                    reconnectInterval = setInterval(connectWebSocket, 3000);
+                }
+                
+                addLog('⚠️ 서버 연결 끊어짐 - 재연결 시도 중...');
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket 에러:', error);
+                addLog('❌ WebSocket 연결 오류');
+            };
+        }
+
+        function handleMessage(data) {
+            const now = new Date().toLocaleTimeString('ko-KR');
+            
+            if (data.type === 'initial' || data.type === 'detection') {
+                updateStatus(data.status);
+                
+                // 막힘 분석 정보 업데이트
+                if (data.blockage_analysis) {
+                    updateBlockageInfo(data.blockage_analysis);
+                }
+                
+                // AI 분석 정보 업데이트
+                if (data.ai_analysis) {
+                    updateAIAnalysis(data.ai_analysis);
+                }
+            }
+            
+            if (data.type === 'detection') {
+                const detection = data.data;
+                addLog(`[${now}] 🗑️ ${detection.garbage_type} 감지 (신뢰도: ${(detection.confidence * 100).toFixed(1)}%)`);
+                
+                // 감지 애니메이션
+                document.getElementById('status-card').classList.add('pulse');
+                setTimeout(() => {
+                    document.getElementById('status-card').classList.remove('pulse');
+                }, 2000);
+                
+                if (data.alert) {
+                    showAlert(data.alert);
+                    addLog(`[${now}] 🚨 ${data.alert.message}`);
+                }
+            }
+            
+            if (data.type === 'initial' && data.recent_alerts) {
+                showRecentAlerts(data.recent_alerts);
+            }
+            
+            if (data.type === 'reset') {
+                addLog(`[${now}] 🔄 시스템 초기화`);
+                document.getElementById('recent-alerts').innerHTML = '알림이 없습니다.';
+            }
+        }
+
+        function updateStatus(status) {
+            const riskScoreElement = document.getElementById('risk-score');
+            const previousRisk = parseFloat(riskScoreElement.textContent.replace('%', '')) || 0;
+            const currentRisk = status.risk_score;
+            const riskChange = currentRisk - previousRisk;
+            
+            // 위험도 변화에 따른 시각적 피드백
+            riskScoreElement.textContent = `${currentRisk.toFixed(1)}%`;
+            
+            // 변화 방향에 따른 색상 변경
+            if (riskChange > 2) {
+                riskScoreElement.style.color = '#dc3545';  // 빨간색 (증가)
+                riskScoreElement.style.fontWeight = 'bold';
+                setTimeout(() => {
+                    riskScoreElement.style.color = '#2c3e50';
+                    riskScoreElement.style.fontWeight = 'normal';
+                }, 2000);
+            } else if (riskChange < -2) {
+                riskScoreElement.style.color = '#28a745';  // 초록색 (감소)
+                riskScoreElement.style.fontWeight = 'bold';
+                setTimeout(() => {
+                    riskScoreElement.style.color = '#2c3e50';
+                    riskScoreElement.style.fontWeight = 'normal';
+                }, 2000);
+            }
+            
+            document.getElementById('pipe-status').textContent = status.pipe_status;
+            document.getElementById('total-detections').textContent = status.total_detections;
+            document.getElementById('alerts-today').textContent = status.alerts_today;
+            
+            const statusCard = document.getElementById('status-card');
+            statusCard.className = `card risk-${status.risk_level}`;
+            
+            // 막힘 정보 업데이트
+            if (status.blockage_percentage !== undefined) {
+                document.getElementById('blockage-percentage').textContent = `${status.blockage_percentage}%`;
+                document.getElementById('flow-restriction').textContent = status.flow_restriction || '알 수 없음';
+                document.getElementById('garbage-volume').textContent = `${status.garbage_volume || 0}cm³`;
+                document.getElementById('accumulated-areas').textContent = `${status.accumulated_areas || 0}개`;
+            }
+            
+            // AI 분석 정보 업데이트
+            if (status.ai_analysis) {
+                updateAIAnalysis(status.ai_analysis);
+            } else {
+                document.getElementById('ai-analysis').style.display = 'none';
+            }
+        }
+
+        function updateBlockageInfo(analysis) {
+            document.getElementById('blockage-percentage').textContent = `${analysis.blockage_percentage}%`;
+            document.getElementById('flow-restriction').textContent = analysis.flow_restriction;
+            document.getElementById('garbage-volume').textContent = `${analysis.garbage_volume}cm³`;
+            document.getElementById('accumulated-areas').textContent = `${analysis.accumulated_areas}개`;
+        }
+
+        function updateAIAnalysis(aiAnalysis) {
+            document.getElementById('ai-analysis').style.display = 'block';
+            document.getElementById('ai-confidence').textContent = `${(aiAnalysis.confidence_level * 100).toFixed(0)}%`;
+            document.getElementById('ai-reasoning').textContent = aiAnalysis.reasoning;
+            document.getElementById('false-positive-prob').textContent = `${(aiAnalysis.false_positive_probability * 100).toFixed(1)}%`;
+            document.getElementById('trend-analysis').textContent = aiAnalysis.trend_analysis;
+            
+            // 권장사항 업데이트
+            const recommendationsList = document.getElementById('ai-recommendations-list');
+            recommendationsList.innerHTML = '';
+            if (aiAnalysis.recommendations && aiAnalysis.recommendations.length > 0) {
+                aiAnalysis.recommendations.forEach(rec => {
+                    const li = document.createElement('li');
+                    li.textContent = rec;
+                    recommendationsList.appendChild(li);
+                });
+            } else {
+                const li = document.createElement('li');
+                li.textContent = '현재 특별한 권장사항이 없습니다.';
+                recommendationsList.appendChild(li);
+            }
+            
+            // AI 분석 결과에 따른 시각적 피드백
+            const aiAnalysisDiv = document.getElementById('ai-analysis');
+            aiAnalysisDiv.className = 'ai-analysis';
+            
+            if (aiAnalysis.risk_assessment === 'critical') {
+                aiAnalysisDiv.style.borderLeftColor = '#dc3545';
+                aiAnalysisDiv.style.background = 'linear-gradient(135deg, #fff5f5 0%, #ffe6e6 100%)';
+            } else if (aiAnalysis.risk_assessment === 'high') {
+                aiAnalysisDiv.style.borderLeftColor = '#fd7e14';
+                aiAnalysisDiv.style.background = 'linear-gradient(135deg, #fff8f0 0%, #ffe8d6 100%)';
+            } else if (aiAnalysis.risk_assessment === 'medium') {
+                aiAnalysisDiv.style.borderLeftColor = '#ffc107';
+                aiAnalysisDiv.style.background = 'linear-gradient(135deg, #fffbf0 0%, #fff3cd 100%)';
+            } else {
+                aiAnalysisDiv.style.borderLeftColor = '#28a745';
+                aiAnalysisDiv.style.background = 'linear-gradient(135deg, #f8fff8 0%, #e8f5e8 100%)';
+            }
+        }
+
+        function showAlert(alert) {
+            const alertsDiv = document.getElementById('recent-alerts');
+            const alertElement = document.createElement('div');
+            alertElement.className = `alert alert-${alert.level}`;
+            
+            const levelText = alert.level === 'warning' ? '⚠️ 주의' : '🚨 위험';
+            alertElement.innerHTML = `<strong>${levelText}</strong>${alert.message.replace(/\n/g, '<br>')}`;
+            
+            if (alertsDiv.innerHTML === '알림이 없습니다.') {
+                alertsDiv.innerHTML = '';
+            }
+            
+            alertsDiv.insertBefore(alertElement, alertsDiv.firstChild);
+            
+            // 최대 3개 알림만 표시
+            while (alertsDiv.children.length > 3) {
+                alertsDiv.removeChild(alertsDiv.lastChild);
+            }
+        }
+
+        function showRecentAlerts(alerts) {
+            const alertsDiv = document.getElementById('recent-alerts');
+            alertsDiv.innerHTML = '';
+            
+            if (alerts.length === 0) {
+                alertsDiv.innerHTML = '알림이 없습니다.';
+                return;
+            }
+            
+            alerts.forEach(alert => {
+                const alertElement = document.createElement('div');
+                alertElement.className = `alert alert-${alert.level}`;
+                const levelText = alert.level === 'warning' ? '⚠️ 주의' : '🚨 위험';
+                alertElement.innerHTML = `<strong>${levelText}</strong>${alert.message.replace(/\n/g, '<br>')}`;
+                alertsDiv.appendChild(alertElement);
+            });
+        }
+
+        function addLog(message) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString('ko-KR');
+            logDiv.innerHTML += `<span style="color: #81c784;">[${timestamp}]</span> ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            
+            // 로그가 너무 많아지면 자동으로 정리
+            const lines = logDiv.innerHTML.split('\n');
+            if (lines.length > 100) {
+                logDiv.innerHTML = lines.slice(-50).join('\n');
+            }
+        }
+
+        // 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            addLog('🚀 하수도 막힘 감지 시스템 시작');
+            connectWebSocket();
+            
+            // 주기적 연결 상태 확인
+            setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send('ping');
+                }
+                
+                // 5초 이상 업데이트가 없으면 연결 문제로 간주
+                if (Date.now() - lastUpdateTime > 5000) {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        document.getElementById('connection-status').innerHTML = '⚠️ 응답 없음';
+                        document.getElementById('connection-status').className = 'connection-status disconnected';
+                    }
+                }
+            }, 3000);
+            
+            // 비디오 스트림 오류 처리
+            const videoFeed = document.getElementById('video-feed');
+            videoFeed.onerror = function() {
+                console.log('비디오 스트림 로드 실패');
+                this.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQwIiBoZWlnaHQ9IjQ4MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjY2NjIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMjQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj7ssL3rqazrnbwg7JqU7Jes7KCAIOyXhuydhDwvdGV4dD48L3N2Zz4=';
+            };
+        });
+
+        // 전역 함수로 시스템 초기화 제공 (개발용)
+        window.resetSystem = async function() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/reset`, { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    addLog('🔄 시스템 수동 초기화 완료');
+                }
+            } catch (error) {
+                addLog('❌ 시스템 초기화 실패: ' + error.message);
+            }
+        };
+    </script>
+</body>
+</html>
