@@ -210,7 +210,7 @@ class GarbageDetector:
     def update_tracking(self, current_detections):
         # 다중 객체 동시 감지를 위한 개선된 추적 로직
         matched_tracks = set()
-        
+
         for detection in current_detections:
             if len(detection) == 7:
                 box, confidence, class_id, class_name, label, category, color = detection
@@ -224,11 +224,11 @@ class GarbageDetector:
                 # 이미 매칭된 추적은 건너뛰기
                 if track_id in matched_tracks:
                     continue
-                    
+
                 # 같은 클래스이거나 유사한 카테고리인 경우만 매칭 고려
                 if track_info['class_id'] == class_id or (
-                    len(detection) >= 7 and 'category' in track_info and 
-                    track_info.get('category') == detection[5]
+                        len(detection) >= 7 and 'category' in track_info and
+                        track_info.get('category') == detection[5]
                 ):
                     center1 = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
                     center2 = ((track_info['box'][0] + track_info['box'][2]) / 2,
