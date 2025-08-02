@@ -21,6 +21,8 @@ class GarbageDetector:
         self.cap = cv2.VideoCapture(0)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)  # 높은 프레임 레이트 설정
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 버퍼 크기 최소화로 지연 감소
         
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {self.device}")
@@ -29,6 +31,14 @@ class GarbageDetector:
         self.server_url = server_url
         self.server_connected = False
         self.test_server_connection()
+        
+        # 감지 통계
+        self.detection_stats = {
+            'total_detections': 0,
+            'last_detection_time': None,
+            'current_risk_score': 0,
+            'current_risk_level': 'safe'
+        }
         
         self.taco_classes = {
             0: 'Aluminium foil',
@@ -103,12 +113,12 @@ class GarbageDetector:
         }
         
         self.confidence_threshold = 0.25
-        self.detection_history = defaultdict(lambda: deque(maxlen=5))
+        self.detection_history = defaultdict(lambda: deque(maxlen=60))  # 2초 * 30fps = 60프레임
         self.stable_detections = {}
-        self.min_detection_frames = 2
-        self.max_missing_frames = 3
+        self.min_detection_frames = 1  # 즉시 감지 전송
+        self.max_missing_frames = 10  # 더 관대한 누락 프레임 허용
         self.frame_skip = 0
-        self.process_every_n_frames = 2
+        self.process_every_n_frames = 1  # 매 프레임마다 처리로 더 빠른 인식
         self.last_stable_detections = []
         
         self.category_colors = {
@@ -145,18 +155,22 @@ class GarbageDetector:
             response = requests.post(
                 f"{self.server_url}/detect",
                 json=detection_data,
-                timeout=2
+                timeout=1  # 더 빠른 응답
             )
             
             if response.status_code == 200:
                 result = response.json()
                 if result.get('significant_change', False):
                     print(f"🚨 위험도 변화: {result.get('risk_score', 0):.1f}% ({result.get('risk_level', 'safe')})")
+                elif result.get('duplicate', False):
+                    print(f"🔄 중복 감지 무시")
                 return result
             else:
+                print(f"❌ 서버 응답 오류: {response.status_code}")
                 return False
                 
         except requests.exceptions.Timeout:
+            print("⏰ 서버 응답 시간 초과")
             return False
         except Exception as e:
             print(f"❌ 서버 전송 오류: {e}")
@@ -169,7 +183,7 @@ class GarbageDetector:
             return False
             
         try:
-            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])  # 더 빠른 전송을 위해 압축률 증가
             if not ret:
                 return False
             
@@ -178,7 +192,7 @@ class GarbageDetector:
             response = requests.post(
                 f"{self.server_url}/update_frame",
                 json={"frame": frame_base64},
-                timeout=0.5
+                timeout=0.1  # 더 짧은 타임아웃으로 빠른 응답
             )
             
             return response.status_code == 200
@@ -244,6 +258,46 @@ class GarbageDetector:
                 if 'category' in track_info and 'color' in track_info:
                     result = result + (track_info['category'], track_info['color'])
                 stable_results.append(result)
+                
+                # 감지가 처음 확정될 때마다 서버로 전송
+                if sum(self.detection_history[track_id]) == self.min_detection_frames:
+                    box = track_info['box']
+                    area = (box[2] - box[0]) * (box[3] - box[1])
+                    
+                    if 'category' in track_info:
+                        garbage_type = f"{track_info['category']}_{track_info['class_name']}"
+                    else:
+                        garbage_type = f"other_{track_info['class_name']}"
+                    
+                    detection_data = {
+                        "timestamp": datetime.now().isoformat(),
+                        "garbage_type": garbage_type,
+                        "confidence": float(track_info['confidence']),
+                        "bbox": [int(box[0]), int(box[1]), int(box[2]), int(box[3])],
+                        "area": float(area),
+                        "location": "main_pipe"
+                    }
+                    
+                    # 백그라운드에서 서버로 전송 (메인 루프에 영향 없도록)
+                    import threading
+                    def send_async():
+                        result = self.send_detection_to_server(detection_data)
+                        if result:
+                            print(f"📤 감지 전송: {garbage_type} (신뢰도: {detection_data['confidence']:.2f})")
+                            # 통계 업데이트
+                            self.detection_stats['total_detections'] += 1
+                            self.detection_stats['last_detection_time'] = datetime.now()
+                            if isinstance(result, dict):
+                                self.detection_stats['current_risk_score'] = result.get('risk_score', 0)
+                                self.detection_stats['current_risk_level'] = result.get('risk_level', 'safe')
+                                print(f"📊 위험도 업데이트: {result.get('risk_score', 0):.1f}% ({result.get('risk_level', 'safe')})")
+                        else:
+                            print(f"❌ 서버 응답 없음: {garbage_type}")
+                    
+                    thread = threading.Thread(target=send_async)
+                    thread.daemon = True
+                    thread.start()
+                
         return stable_results
     
     def get_category_for_class(self, class_id):
@@ -279,38 +333,16 @@ class GarbageDetector:
                         class_id = int(box.cls[0].cpu().numpy())
                         class_name = self.model.names[class_id]
                         
-                        if class_id in self.taco_classes:
+                        if class_id in self.taco_classes and class_id != 0:  # 알루미늄 호일(0번) 제외
                             class_name, category, color = self.get_class_info(class_id)
                             label = f"{category.upper()}: {class_name} ({confidence:.2f})"
                             current_detections.append(([x1, y1, x2, y2], confidence, class_id, class_name, label, category, color))
-                            
-                            # 서버로 감지 데이터 전송
-                            area = (x2 - x1) * (y2 - y1)
-                            detection_data = {
-                                "timestamp": datetime.now().isoformat(),
-                                "garbage_type": f"{category}_{class_name}",
-                                "confidence": float(confidence),
-                                "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                                "area": float(area),
-                                "location": "main_pipe"
-                            }
-                            self.send_detection_to_server(detection_data)
                         else:
                             model_class_name = self.model.names.get(class_id, f'Unknown_{class_id}')
-                            label = f"OTHER: {model_class_name} ({confidence:.2f})"
-                            current_detections.append(([x1, y1, x2, y2], confidence, class_id, model_class_name, label, 'other', (128, 128, 128)))
-                            
-                            # 서버로 감지 데이터 전송
-                            area = (x2 - x1) * (y2 - y1)
-                            detection_data = {
-                                "timestamp": datetime.now().isoformat(),
-                                "garbage_type": f"other_{model_class_name}",
-                                "confidence": float(confidence),
-                                "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                                "area": float(area),
-                                "location": "main_pipe"
-                            }
-                            self.send_detection_to_server(detection_data)
+                            # 사람(person) 클래스 제외
+                            if model_class_name.lower() != 'person':
+                                label = f"OTHER: {model_class_name} ({confidence:.2f})"
+                                current_detections.append(([x1, y1, x2, y2], confidence, class_id, model_class_name, label, 'other', (128, 128, 128)))
             
             stable_detections = self.update_tracking(current_detections)
             self.last_stable_detections = stable_detections
@@ -355,9 +387,15 @@ class GarbageDetector:
             
             annotated_frame = self.detect_garbage(frame)
             
-            # 서버로 현재 프레임 전송 (웹 대시보드용)
-            if frame_count % 3 == 0:  # 3프레임마다 전송 (성능 최적화)
-                self.send_frame_to_server(annotated_frame)
+            # 서버로 현재 프레임 전송 (웹 대시보드용) - 백그라운드로 처리
+            if frame_count % 2 == 0:  # 2프레임마다 전송 (성능 최적화)
+                import threading
+                def send_frame_async():
+                    self.send_frame_to_server(annotated_frame)
+                
+                thread = threading.Thread(target=send_frame_async)
+                thread.daemon = True
+                thread.start()
             
             # 주기적 서버 상태 확인
             if time.time() - last_status_check > 30:  # 30초마다
@@ -365,9 +403,12 @@ class GarbageDetector:
                 last_status_check = time.time()
             
             # 상태 정보 표시
+            status_color = (0, 255, 0) if self.server_connected else (0, 0, 255)
             status_text = f"Server: {'Connected' if self.server_connected else 'Disconnected'}"
-            cv2.putText(annotated_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            cv2.putText(annotated_frame, "Press ESC to exit", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(annotated_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+            cv2.putText(annotated_frame, f"Detections: {self.detection_stats['total_detections']}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(annotated_frame, f"Risk: {self.detection_stats['current_risk_score']:.1f}% ({self.detection_stats['current_risk_level']})", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(annotated_frame, "Press ESC to exit", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             cv2.imshow('Garbage Detection', annotated_frame)
             

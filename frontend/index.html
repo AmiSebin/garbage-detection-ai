@@ -556,7 +556,10 @@
         function handleMessage(data) {
             const now = new Date().toLocaleTimeString('ko-KR');
             
+            console.log('📨 받은 메시지:', data); // 디버깅용
+            
             if (data.type === 'initial' || data.type === 'detection') {
+                console.log('📊 상태 업데이트:', data.status); // 디버깅용
                 updateStatus(data.status);
                 
                 // 막힘 분석 정보 업데이트
@@ -597,10 +600,14 @@
         }
 
         function updateStatus(status) {
+            console.log('🔍 위험도 업데이트:', status.risk_score, '이전:', document.getElementById('risk-score').textContent); // 디버깅용
+            
             const riskScoreElement = document.getElementById('risk-score');
             const previousRisk = parseFloat(riskScoreElement.textContent.replace('%', '')) || 0;
             const currentRisk = status.risk_score;
             const riskChange = currentRisk - previousRisk;
+            
+            console.log('📈 위험도 변화:', previousRisk, '→', currentRisk, '변화:', riskChange); // 디버깅용
             
             // 위험도 변화에 따른 시각적 피드백
             riskScoreElement.textContent = `${currentRisk.toFixed(1)}%`;
