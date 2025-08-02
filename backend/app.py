@@ -26,13 +26,11 @@ app = FastAPI(title="하수도 막힘 감지 시스템 API", version="2.0.0")
 # CORS 설정 (프론트엔드 분리로 인해 필요)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발용 - 실제 배포시에는 특정 도메인으로 제한
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ==================== 데이터 모델 ====================
 
 class DetectionData(BaseModel):
     timestamp: str
@@ -77,8 +75,6 @@ class AIAnalysis(BaseModel):
     trend_analysis: str  # 추세 분석
     severity_score: float  # AI 심각도 점수 (0-100)
 
-# ==================== 전역 상태 ====================
-
 current_status = {
     "risk_score": 0.0,
     "risk_level": "safe",
@@ -108,10 +104,10 @@ camera_active = False
 
 # 새로운 위험도 임계값 (다층적 평가 기준)
 RISK_THRESHOLDS = {
-    "safe": (0, 25),      # 0-25점: 안전
-    "warning": (26, 50),  # 26-50점: 주의  
-    "caution": (51, 75),  # 51-75점: 경고
-    "danger": (76, 100)   # 76-100점: 위험
+    "safe": (0, 30),
+    "warning": (31, 60),
+    "caution": (61, 75),
+    "danger": (76, 100)
 }
 
 # 쓰레기 유형별 위험도 가중치 (막힘 위험성 기준)
@@ -581,20 +577,20 @@ def calculate_risk_score_with_ai(detections: List[DetectionData]) -> tuple[float
         try:
             det_time = datetime.fromisoformat(d.timestamp.replace('Z', '+00:00'))
             seconds_ago = (now - det_time).total_seconds()
-            if seconds_ago <= 15:  # 15초 이내만 활성 상태로 간주
+            if seconds_ago <= 8:  # 8초 이내만 활성 상태로 간주 (더 빠른 반응)
                 recent_detections_only.append(d)
         except:
             continue
     
     # 감지가 없으면 위험도 감소
     if not recent_detections_only:
-        decay_rate = 8.0  # 8% 감소 (더 빠른 감소)
+        decay_rate = 15.0  # 15% 감소 (더 빠른 감소)
         new_score = max(0.0, current_risk - decay_rate)
         
         ai_analysis = AIAnalysis(
             risk_assessment="low",
             confidence_level=0.9,
-            reasoning="최근 15초 내 감지된 쓰레기가 없어 안전한 상태입니다.",
+            reasoning="최근 8초 내 감지된 쓰레기가 없어 안전한 상태입니다.",
             recommendations=["정기적인 모니터링을 계속하세요."],
             false_positive_probability=0.0,
             trend_analysis="개선",
@@ -606,7 +602,7 @@ def calculate_risk_score_with_ai(detections: List[DetectionData]) -> tuple[float
     valid_detections = [d for d in recent_detections_only if is_valid_detection(d)]
     
     if not valid_detections:
-        base_score = max(0, current_risk - 3)  # 더 적은 감소
+        base_score = max(0, current_risk - 10)  # 더 큰 감소
         ai_analysis = AIAnalysis(
             risk_assessment="low",
             confidence_level=0.8,
@@ -1375,16 +1371,16 @@ async def periodic_risk_update():
     """주기적으로 위험도 업데이트하여 자동 감소 처리"""
     while True:
         try:
-            await asyncio.sleep(2.0)  # 2초마다 더 자주 실행
+            await asyncio.sleep(1.0)  # 1초마다 더 자주 실행
             
-            # 오래된 감지 데이터 정리 (10초 이상 된 것들)
+            # 오래된 감지 데이터 정리 (5초 이상 된 것들로 더 빠르게)
             now = datetime.now()
             old_detections = []
             for detection in list(recent_detections):
                 try:
                     det_time = datetime.fromisoformat(detection.timestamp.replace('Z', '+00:00'))
                     seconds_ago = (now - det_time).total_seconds()
-                    if seconds_ago > 10:  # 10초 이상 된 감지
+                    if seconds_ago > 5:  # 5초 이상 된 감지 (더 빠른 제거)
                         old_detections.append(detection)
                 except:
                     continue
@@ -1394,13 +1390,33 @@ async def periodic_risk_update():
                 if old_detection in recent_detections:
                     recent_detections.remove(old_detection)
             
-            # 감지가 제거되었으면 위험도 재계산
-            if old_detections:
-                previous_risk = current_status.get("risk_score", 0)
-                previous_level = current_status.get("risk_level", "safe")
+            # 주기적인 위험도 감소 (감지가 없어도 계속 감소)
+            previous_risk = current_status.get("risk_score", 0)
+            previous_level = current_status.get("risk_level", "safe")
+            
+            # 현재 감지 목록으로 위험도 재계산
+            detections_list = list(recent_detections)
+            
+            # 감지가 없고 위험도가 0보다 크면 자동 감소
+            if not detections_list and previous_risk > 0:
+                # 더 적극적인 감소율 적용 (1초마다 2% 감소)
+                auto_decay_rate = 2.0
+                new_risk = max(0.0, previous_risk - auto_decay_rate)
+                current_status["risk_score"] = new_risk
+                current_status["risk_level"] = get_risk_level(new_risk)
+                current_status["pipe_status"] = get_pipe_status(current_status["risk_level"])
                 
-                # 현재 감지 목록으로 위험도 재계산
-                detections_list = list(recent_detections)
+                # 변화가 있으면 브로드캐스트
+                if new_risk != previous_risk:
+                    broadcast_data = {
+                        "type": "auto_decay",
+                        "status": current_status,
+                        "message": f"쓰레기가 감지되지 않아 위험도가 자동으로 감소했습니다."
+                    }
+                    await broadcast_to_clients(broadcast_data)
+                    logger.info(f"📉 자동 감소: {previous_risk:.1f}% → {new_risk:.1f}%")
+            elif old_detections:
+                # 오래된 감지 제거로 인한 재계산
                 update_status(detections_list)
                 
                 current_level = current_status["risk_level"]
@@ -1409,7 +1425,7 @@ async def periodic_risk_update():
                 # 위험도가 감소했거나 레벨이 변경되었을 때 브로드캐스트
                 if new_risk < previous_risk or current_level != previous_level:
                     broadcast_data = {
-                        "type": "auto_decay",
+                        "type": "detection_removal",
                         "status": current_status,
                         "message": f"오래된 쓰레기 감지가 제거되어 위험도가 업데이트되었습니다. ({len(old_detections)}개 제거)"
                     }
