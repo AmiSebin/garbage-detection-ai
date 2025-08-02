@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>하수도 막힘 감지 시스템</title>
+    <title>Garvis</title>
     <style>
         * {
             margin: 0;
@@ -36,7 +36,7 @@
         .header h1 {
             font-size: 2.5rem;
             margin-bottom: 10px;
-            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(45deg, #667eea 0%, #4b7fa2 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
@@ -254,8 +254,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚰 하수도 막힘 감지 시스템</h1>
-            <p>AI 기반 실시간 모니터링</p>
+            <h1>Garvis</h1>
+            <p>AI 기반 하수구 지키미</p>
         </div>
 
         <div class="connection-status" id="connection-status">
@@ -272,14 +272,14 @@
         <div class="main-grid">
             <!-- 위험도 -->
             <div class="card" id="status-card">
-                <h3>📊 현재 위험도</h3>
+                <h3>현재 위험도</h3>
                 <div class="label">막힘 위험도</div>
                 <div class="metric" id="risk-score">--</div>
             </div>
 
             <!-- 실시간 카메라 -->
             <div class="card video-container">
-                <h3>📹 실시간 카메라</h3>
+                <h3>실시간 카메라</h3>
                 <img id="video-feed" class="video-feed" src="http://localhost:8000/video_feed" alt="실시간 카메라 피드" loading="eager" />
             </div>
         </div>
