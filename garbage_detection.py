@@ -16,7 +16,7 @@ from ultralytics import YOLO
 
 
 class GarbageDetector:
-    def __init__(self, model_path='yolo11m.pt', server_url="http://localhost:8000"):
+    def __init__(self, model_path='yolo11n.pt', server_url="http://localhost:8000"):
 
         self.model = YOLO(model_path)
         self.cap = cv2.VideoCapture(0)
@@ -121,7 +121,7 @@ class GarbageDetector:
         self.frame_skip = 0
         self.process_every_n_frames = 1  # 매 프레임마다 처리로 더 빠른 인식
         self.last_stable_detections = []
-        
+
         # 겹쳐진 객체 감지를 위한 추가 설정
         self.overlap_threshold = 0.3  # 더 낮은 겹침 임계값으로 더 많은 객체 허용
         self.multi_scale_detection = True
@@ -208,32 +208,49 @@ class GarbageDetector:
             return False
 
     def update_tracking(self, current_detections):
+        # 다중 객체 동시 감지를 위한 개선된 추적 로직
+        matched_tracks = set()
+        
         for detection in current_detections:
             if len(detection) == 7:
                 box, confidence, class_id, class_name, label, category, color = detection
             else:
                 box, confidence, class_id, class_name, label = detection
             best_match_id = None
+            min_distance = float('inf')
 
-            for track_id, track_info in list(self.stable_detections.items())[:10]:
-                if track_info['class_id'] == class_id:
+            # 모든 기존 추적과 비교하여 가장 가까운 것 찾기
+            for track_id, track_info in self.stable_detections.items():
+                # 이미 매칭된 추적은 건너뛰기
+                if track_id in matched_tracks:
+                    continue
+                    
+                # 같은 클래스이거나 유사한 카테고리인 경우만 매칭 고려
+                if track_info['class_id'] == class_id or (
+                    len(detection) >= 7 and 'category' in track_info and 
+                    track_info.get('category') == detection[5]
+                ):
                     center1 = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
                     center2 = ((track_info['box'][0] + track_info['box'][2]) / 2,
                                (track_info['box'][1] + track_info['box'][3]) / 2)
                     distance = ((center1[0] - center2[0]) ** 2 + (center1[1] - center2[1]) ** 2) ** 0.5
 
-                    if distance < 100:
+                    # 거리 임계값을 더 엄격하게 설정하여 겹친 객체들을 구분
+                    if distance < 80 and distance < min_distance:  # 거리 임계값 축소
                         best_match_id = track_id
-                        break
+                        min_distance = distance
 
-            if best_match_id:
+            if best_match_id is not None:
+                # 기존 추적 업데이트
+                matched_tracks.add(best_match_id)
                 detection_data = {'box': box, 'confidence': confidence, 'missing_frames': 0}
                 if len(detection) >= 7:
                     detection_data.update({'category': detection[5], 'color': detection[6]})
                 self.stable_detections[best_match_id].update(detection_data)
                 self.detection_history[best_match_id].append(True)
             else:
-                new_id = len(self.stable_detections)
+                # 새로운 추적 생성 (겹친 객체도 별도로 추적)
+                new_id = max(self.stable_detections.keys(), default=-1) + 1
                 detection_data = {
                     'box': box, 'confidence': confidence, 'class_id': class_id,
                     'class_name': class_name, 'label': label, 'missing_frames': 0
@@ -322,11 +339,12 @@ class GarbageDetector:
     def detect_garbage(self, frame):
         # 이미지 품질 개선으로 겹쳐진 객체 인식 향상
         enhanced_frame = cv2.convertScaleAbs(frame, alpha=1.1, beta=10)  # 대비와 밝기 향상
-        
-        # 겹쳐진 쓰레기 전체 인식을 위한 설정
+
+        # 겹쳐진 쓰레기 전체 인식을 위한 설정 개선
         # 멀티스케일 감지: 다양한 크기로 감지 시도
-        results = self.model(enhanced_frame, device=self.device, conf=0.1, iou=0.2, verbose=False, 
-                           agnostic_nms=True, max_det=100, augment=True)
+        # IoU를 더 높게 설정하여 겹친 객체들도 모두 감지하도록 함
+        results = self.model(enhanced_frame, device=self.device, conf=0.05, iou=0.8, verbose=False,
+                             agnostic_nms=False, max_det=200, augment=True)
 
         self.frame_skip += 1
         if self.frame_skip % self.process_every_n_frames != 0:
@@ -456,7 +474,7 @@ def main():
     print("=" * 50)
 
     # 모델 선택 (가벼운 모델로 변경)
-    model_path = 'yolo11m.pt'  # 가벼운 nano 모델
+    model_path = 'yolo11n.pt'  # 가벼운 nano 모델
 
     # 커스텀 모델이 있다면 사용
     import os

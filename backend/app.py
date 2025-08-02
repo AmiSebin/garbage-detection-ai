@@ -149,9 +149,9 @@ AI_WEIGHTS = {
     "critical": 1.2
 }
 
-# 감지 신뢰도 임계값 (적당히 조정)
-MIN_CONFIDENCE_THRESHOLD = 0.4  # 40% 이상 신뢰도만 처리 (더 관대)
-MIN_AREA_THRESHOLD = 1000       # 최소 면적 감소 (더 작은 객체도 감지)
+# 감지 신뢰도 임계값 (낮은 신뢰도도 허용)
+MIN_CONFIDENCE_THRESHOLD = 0.06 # 6% 이상 신뢰도만 처리 (매우 관대)
+MIN_AREA_THRESHOLD = 500        # 최소 면적 더욱 감소 (더 작은 객체도 감지)
 MIN_DETECTIONS_FOR_WARNING = 2  # 경고 발생을 위한 최소 감지 횟수 감소
 MIN_DETECTIONS_FOR_DANGER = 4   # 위험 발생을 위한 최소 감지 횟수 감소
 
@@ -571,40 +571,30 @@ def is_valid_detection(detection: DetectionData) -> bool:
     return True
 
 def calculate_risk_score_with_ai(detections: List[DetectionData]) -> tuple[float, AIAnalysis]:
-    """다층적 위험도 평가 모델을 사용한 개선된 위험도 계산"""
+    """단순하고 효과적인 위험도 계산"""
     current_risk = current_status.get("risk_score", 0)
     
-    # 환경적 위험 요인 계산
-    env_factors = calculate_environmental_risk_factors()
-    
-    # 동적 임계값 조정
-    dynamic_thresholds = get_dynamic_thresholds(
-        weather_risk=env_factors['weather_risk'],
-        seasonal_factor=env_factors['seasonal_factor'],
-        location_factor=env_factors['location_factor']
-    )
-    
-    # 최근 10초 이내의 감지만 사용 (실시간 반영 강화)
+    # 최근 15초 이내의 감지만 사용 (실시간 반영 강화)
     now = datetime.now()
     recent_detections_only = []
     for d in detections:
         try:
             det_time = datetime.fromisoformat(d.timestamp.replace('Z', '+00:00'))
             seconds_ago = (now - det_time).total_seconds()
-            if seconds_ago <= 10:  # 10초 이내만 활성 상태로 간주
+            if seconds_ago <= 15:  # 15초 이내만 활성 상태로 간주
                 recent_detections_only.append(d)
         except:
             continue
     
+    # 감지가 없으면 위험도 감소
     if not recent_detections_only:
-        # 최근 10초 내 감지가 없으면 위험도를 빠르게 감소
-        decay_rate = 10.0  # 더 빠른 감소
+        decay_rate = 8.0  # 8% 감소 (더 빠른 감소)
         new_score = max(0.0, current_risk - decay_rate)
         
         ai_analysis = AIAnalysis(
             risk_assessment="low",
             confidence_level=0.9,
-            reasoning="최근 10초 내 감지된 쓰레기가 없어 안전한 상태입니다.",
+            reasoning="최근 15초 내 감지된 쓰레기가 없어 안전한 상태입니다.",
             recommendations=["정기적인 모니터링을 계속하세요."],
             false_positive_probability=0.0,
             trend_analysis="개선",
@@ -613,114 +603,109 @@ def calculate_risk_score_with_ai(detections: List[DetectionData]) -> tuple[float
         return new_score, ai_analysis
     
     # 유효한 감지만 필터링
-    valid_detections = [d for d in detections if is_valid_detection(d)]
+    valid_detections = [d for d in recent_detections_only if is_valid_detection(d)]
     
     if not valid_detections:
-        base_score = max(0, current_status.get("risk_score", 0) - 5)  # 더 빠른 감소
+        base_score = max(0, current_risk - 3)  # 더 적은 감소
         ai_analysis = AIAnalysis(
             risk_assessment="low",
-            confidence_level=0.6,
+            confidence_level=0.8,
             reasoning="유효한 감지가 없어 안전한 상태입니다.",
-            recommendations=["카메라 시스템을 점검하세요.", "감지 정확도를 높이세요."],
-            false_positive_probability=0.7,
-            trend_analysis="불확실",
+            recommendations=["감지 시스템을 점검하세요."],
+            false_positive_probability=0.3,
+            trend_analysis="개선",
             severity_score=0.0
         )
         return base_score, ai_analysis
     
-    # === 1. 물리적 막힘도 계산 (40% 가중치) ===
-    blockage_analysis = analyze_pipe_blockage(valid_detections)
+    # === 단순하고 직관적인 위험도 계산 ===
     
-    # 쓰레기 유형별 위험도 가중치 적용
-    type_weighted_score = 0.0
-    total_area_weighted = 0.0
+    # 1. 기본 점수: 감지 개수에 따른 점수 (가장 중요한 요소)
+    detection_count = len(valid_detections)
+    base_score = min(detection_count * 8, 60)  # 개수당 8점, 최대 60점
     
+    # 2. 신뢰도 보너스 (높은 신뢰도일수록 더 위험)
+    avg_confidence = sum(d.confidence for d in valid_detections) / len(valid_detections)
+    confidence_bonus = (avg_confidence - 0.3) * 30  # 30% 이상부터 보너스
+    confidence_bonus = max(0, min(confidence_bonus, 20))  # 0-20점
+    
+    # 3. 면적 보너스 (큰 쓰레기일수록 더 위험)
+    total_area = sum(d.area for d in valid_detections)
+    area_bonus = min(total_area / 5000, 15)  # 면적당 점수, 최대 15점
+    
+    # 4. 쓰레기 종류 가중치
+    type_bonus = 0
     for detection in valid_detections:
         type_weight = get_garbage_type_risk_weight(detection.garbage_type)
-        weighted_area = detection.area * type_weight
-        total_area_weighted += weighted_area
-        type_weighted_score += detection.confidence * type_weight * (detection.area / 10000)
+        type_bonus += (type_weight - 1.0) * 3  # 기본 1.0에서 벗어난 만큼 점수 추가
+    type_bonus = min(type_bonus, 10)  # 최대 10점
     
-    # 물리적 막힘도 점수 (쓰레기 수 반영)
-    detection_count_bonus = min(len(valid_detections) * 2, 15)  # 감지 개수 보너스
-    physical_blockage_score = min(
-        (blockage_analysis.blockage_percentage * 0.5) +
-        (type_weighted_score * 0.3) +
-        (blockage_analysis.accumulated_areas * 0.1) +
-        detection_count_bonus,
-        40.0  # 최대 40점
+    # 최종 점수 계산
+    calculated_score = base_score + confidence_bonus + area_bonus + type_bonus
+    
+    # 점진적 변화 적용 (급격한 변화 방지)
+    if calculated_score > current_risk:
+        # 증가 시: 차이의 70%만 반영
+        change = (calculated_score - current_risk) * 0.7
+        new_score = min(current_risk + change, 100.0)
+    else:
+        # 감소 시: 차이의 50%만 반영 (천천히 감소)
+        change = (current_risk - calculated_score) * 0.5
+        new_score = max(calculated_score, current_risk - change)
+    
+    # AI 분석 생성 (단순화)
+    if new_score >= 75:
+        risk_assessment = "critical"
+        reasoning = f"다수의 쓰레기가 감지되어 매우 위험합니다. (감지수: {detection_count}, 평균신뢰도: {avg_confidence:.2f})"
+    elif new_score >= 50:
+        risk_assessment = "high"
+        reasoning = f"여러 쓰레기가 감지되어 주의가 필요합니다. (감지수: {detection_count}, 평균신뢰도: {avg_confidence:.2f})"
+    elif new_score >= 25:
+        risk_assessment = "medium"
+        reasoning = f"일부 쓰레기가 감지되었습니다. (감지수: {detection_count}, 평균신뢰도: {avg_confidence:.2f})"
+    else:
+        risk_assessment = "low"
+        reasoning = f"소량의 쓰레기가 감지되었습니다. (감지수: {detection_count}, 평균신뢰도: {avg_confidence:.2f})"
+    
+    # 권장사항
+    recommendations = []
+    if new_score >= 60:
+        recommendations.append("즉시 정비팀에 연락하세요.")
+        recommendations.append("해당 구간의 흐름을 확인하세요.")
+    elif new_score >= 30:
+        recommendations.append("정기적인 청소를 고려하세요.")
+    else:
+        recommendations.append("계속 모니터링하세요.")
+    
+    # 추세 분석
+    risk_change = new_score - current_risk
+    if risk_change > 3:
+        trend_analysis = "악화"
+    elif risk_change < -3:
+        trend_analysis = "개선"
+    else:
+        trend_analysis = "안정"
+    
+    ai_analysis = AIAnalysis(
+        risk_assessment=risk_assessment,
+        confidence_level=min(avg_confidence, 0.95),
+        reasoning=reasoning,
+        recommendations=recommendations,
+        false_positive_probability=max(0.1, 1.0 - avg_confidence),
+        trend_analysis=trend_analysis,
+        severity_score=min(new_score, 100.0)
     )
     
-    # === 2. 환경적 요인 계산 (30% 가중치) ===
-    seasonal_bonus = (env_factors['seasonal_factor'] - 1.0) * 10  # 계절별 추가 점수
-    time_bonus = (env_factors['time_factor'] - 1.0) * 5  # 시간대별 추가 점수
-    
-    environmental_score = min(seasonal_bonus + time_bonus, 30.0)  # 최대 30점
-    
-    # === 3. 시간적 패턴 계산 (20% 가중치) ===
-    spatiotemporal_patterns = analyze_spatiotemporal_patterns(valid_detections)
-    
-    pattern_score = min(
-        (spatiotemporal_patterns['accumulation_rate'] * 0.3) +
-        (spatiotemporal_patterns['concentration_factor'] * 0.3) +
-        (spatiotemporal_patterns['persistence_score'] * 0.2) +
-        (spatiotemporal_patterns['spatial_clustering'] * 0.1) +
-        (spatiotemporal_patterns['temporal_intensity'] * 0.1),
-        20.0  # 최대 20점
-    )
-    
-    # === 4. AI 신뢰도 보정 (10% 가중치) ===
-    ai_analysis = analyze_with_ai(valid_detections, blockage_analysis)
-    
-    # 평균 신뢰도 계산
-    avg_confidence = sum(d.confidence for d in valid_detections) / len(valid_detections)
-    confidence_score = min((avg_confidence - 0.7) * 20, 10.0) if avg_confidence > 0.7 else 0
-    
-    # AI 신뢰도 보정 점수
-    ai_reliability_score = min(
-        confidence_score * (1.0 - ai_analysis.false_positive_probability),
-        10.0  # 최대 10점
-    )
-    
-    # === 최종 위험도 점수 계산 ===
-    base_risk_score = (
-        physical_blockage_score +      # 40%
-        environmental_score +          # 30%
-        pattern_score +               # 20%
-        ai_reliability_score          # 10%
-    )
-    
-    # AI 분석 가중치 적용
-    ai_weight = AI_WEIGHTS.get(ai_analysis.risk_assessment, 1.0)
-    adjusted_score = base_risk_score * ai_weight
-    
-    # 동적 변화 적용
-    dynamic_change = calculate_enhanced_risk_change(valid_detections, current_risk, spatiotemporal_patterns)
-    
-    if dynamic_change < 0:  # 감소하는 경우
-        final_score = max(0, current_risk + dynamic_change * 1.5)
-    else:  # 증가하는 경우
-        final_score = min(100, current_risk + dynamic_change * 0.8)
-    
-    # 현재 위험도와 새로 계산된 위험도 비교하여 더 낮은 값 사용
-    combined_score = min(adjusted_score, current_risk) if adjusted_score < current_risk else adjusted_score
-    
-    # 상태 업데이트
+    # 상태 업데이트 (필요한 것만)
+    blockage_analysis = analyze_pipe_blockage(valid_detections)
     current_status.update({
         "blockage_percentage": blockage_analysis.blockage_percentage,
         "garbage_volume": blockage_analysis.garbage_volume,
         "flow_restriction": blockage_analysis.flow_restriction,
-        "accumulated_areas": blockage_analysis.accumulated_areas,
-        "ai_analysis": ai_analysis.model_dump(),
-        "environmental_factors": env_factors,
-        "spatiotemporal_patterns": spatiotemporal_patterns,
-        "physical_score": physical_blockage_score,
-        "environmental_score": environmental_score,
-        "pattern_score": pattern_score,
-        "ai_score": ai_reliability_score
+        "accumulated_areas": blockage_analysis.accumulated_areas
     })
     
-    return min(combined_score, 100.0), ai_analysis
+    return new_score, ai_analysis
 
 def calculate_enhanced_risk_change(detections: List[DetectionData], current_risk: float, patterns: Dict[str, float]) -> float:
     """개선된 동적 위험도 변화 계산"""
@@ -1142,7 +1127,7 @@ async def process_detection(data: DetectionData):
                 f"• 막힘률: {blockage_info}%\n"
                 f"• 흐름 제한: {flow_restriction}\n"
                 f"• 축적 쓰레기량: {garbage_volume}cm³\n"
-                f"• 위험도: {current_status['risk_score']:.1f}%"
+                f"• 위험도: {current_status['risk_score']:.2f}%"
             )
 
             alert = AlertData(
@@ -1175,7 +1160,7 @@ async def process_detection(data: DetectionData):
             await broadcast_to_clients(broadcast_data)
 
         # 위험도 계산 후 로그
-        logger.info(f"📊 위험도 계산 완료 - 이전: {previous_risk_score:.1f}% → 현재: {current_status['risk_score']:.1f}% (변화: {risk_change:.1f}%)")
+        logger.info(f"📊 위험도 계산 완료 - 이전: {previous_risk_score:.2f}% → 현재: {current_status['risk_score']:.2f}% (변화: {risk_change:.2f}%)")
 
         return {
             "success": True,

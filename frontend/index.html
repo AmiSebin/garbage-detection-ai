@@ -221,6 +221,34 @@
             50% { transform: scale(1.05); }
             100% { transform: scale(1); }
         }
+
+        /* Push 알림 권한 버튼 스타일 */
+        .notification-permission {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            z-index: 999;
+        }
+
+        .permission-btn {
+            background: linear-gradient(45deg, #FF9800, #F57C00);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3);
+            transition: all 0.3s ease;
+            animation: pulse 2s infinite;
+        }
+
+        .permission-btn:hover {
+            background: linear-gradient(45deg, #F57C00, #E65100);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 152, 0, 0.4);
+        }
     </style>
 </head>
 <body>
@@ -232,6 +260,13 @@
 
         <div class="connection-status" id="connection-status">
             <span class="loading"></span> 연결 중...
+        </div>
+
+        <!-- Push 알림 권한 요청 버튼 -->
+        <div class="notification-permission" id="notification-permission" style="display: none;">
+            <button onclick="requestNotificationPermission()" class="permission-btn">
+                🔔 알림 권한 허용
+            </button>
         </div>
 
         <div class="main-grid">
@@ -372,8 +407,8 @@
             const currentRisk = status.risk_score;
             const riskChange = currentRisk - previousRisk;
 
-            // 위험도 업데이트
-            riskScoreElement.textContent = `${currentRisk.toFixed(1)}%`;
+            // 위험도 업데이트 (더 세밀하게)
+            riskScoreElement.textContent = `${currentRisk.toFixed(2)}%`;
 
             // 변화 방향에 따른 색상 변경
             if (riskChange > 2) {
@@ -434,8 +469,214 @@
             });
         }
 
+        // ==================== Push 알림 기능 ====================
+        
+        let pushRegistration = null;
+
+        // Service Worker 등록
+        async function registerServiceWorker() {
+            if ('serviceWorker' in navigator) {
+                try {
+                    const registration = await navigator.serviceWorker.register('/sw.js');
+                    console.log('Service Worker 등록 성공:', registration);
+                    
+                    // Push Manager 확인
+                    if ('PushManager' in window) {
+                        const subscription = await registration.pushManager.getSubscription();
+                        if (subscription) {
+                            pushRegistration = subscription;
+                            console.log('기존 Push 구독:', subscription);
+                        }
+                    }
+                    
+                    return registration;
+                } catch (error) {
+                    console.error('Service Worker 등록 실패:', error);
+                }
+            }
+        }
+
+        // 알림 권한 요청
+        async function requestNotificationPermission() {
+            if (!('Notification' in window)) {
+                alert('이 브라우저는 알림을 지원하지 않습니다.');
+                return false;
+            }
+
+            if (Notification.permission === 'granted') {
+                await subscribeToPush();
+                document.getElementById('notification-permission').style.display = 'none';
+                return true;
+            }
+
+            if (Notification.permission !== 'denied') {
+                const permission = await Notification.requestPermission();
+                if (permission === 'granted') {
+                    await subscribeToPush();
+                    document.getElementById('notification-permission').style.display = 'none';
+                    
+                    // 권한 허용 확인 알림
+                    new Notification('하수도 막힘 감지 시스템', {
+                        body: '알림이 활성화되었습니다. 위험 상황 발생시 즉시 알려드리겠습니다.',
+                        icon: '/favicon.ico'
+                    });
+                    
+                    return true;
+                }
+            }
+
+            alert('알림 권한이 필요합니다. 브라우저 설정에서 알림을 허용해주세요.');
+            return false;
+        }
+
+        // Push 구독
+        async function subscribeToPush() {
+            if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+                console.warn('Push 알림이 지원되지 않습니다.');
+                return;
+            }
+
+            try {
+                const registration = await navigator.serviceWorker.ready;
+                
+                // VAPID 키 (실제 운영시에는 서버에서 받아와야 함)
+                const vapidPublicKey = 'BMqSvZe8Jk1GI4BsX4PZIHShH8-LdXbBmZcRGWa-Bx-r2z5J4K9m8w7p6d3F8s2a1Y7H';
+                
+                const subscription = await registration.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+                });
+
+                pushRegistration = subscription;
+                console.log('Push 구독 성공:', subscription);
+
+                // 서버에 구독 정보 전송
+                await fetch(`${API_BASE_URL}/push/subscribe`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(subscription)
+                });
+
+            } catch (error) {
+                console.error('Push 구독 실패:', error);
+            }
+        }
+
+        // VAPID 키 변환 함수
+        function urlBase64ToUint8Array(base64String) {
+            const padding = '='.repeat((4 - base64String.length % 4) % 4);
+            const base64 = (base64String + padding)
+                .replace(/-/g, '+')
+                .replace(/_/g, '/');
+
+            const rawData = window.atob(base64);
+            const outputArray = new Uint8Array(rawData.length);
+
+            for (let i = 0; i < rawData.length; ++i) {
+                outputArray[i] = rawData.charCodeAt(i);
+            }
+            return outputArray;
+        }
+
+        // 알림 권한 상태 확인
+        function checkNotificationPermission() {
+            if ('Notification' in window) {
+                if (Notification.permission === 'default') {
+                    document.getElementById('notification-permission').style.display = 'block';
+                } else if (Notification.permission === 'granted') {
+                    subscribeToPush();
+                }
+            }
+        }
+
+        // Push 알림 보내기 (테스트용)
+        async function sendTestNotification() {
+            if (Notification.permission === 'granted') {
+                new Notification('테스트 알림', {
+                    body: '하수도 막힘 감지 시스템 테스트 알림입니다.',
+                    icon: '/favicon.ico',
+                    vibrate: [200, 100, 200]
+                });
+            }
+        }
+
+        // 알림 데이터 처리 개선
+        function handleMessage(data) {
+            if (data.type === 'initial' || data.type === 'detection') {
+                updateStatus(data.status);
+            }
+
+            if (data.type === 'detection') {
+                // 감지 애니메이션
+                document.getElementById('status-card').classList.add('pulse');
+                setTimeout(() => {
+                    document.getElementById('status-card').classList.remove('pulse');
+                }, 2000);
+
+                if (data.alert) {
+                    showAlert(data.alert);
+                    
+                    // Push 알림 전송 (권한이 있을 때만)
+                    if (Notification.permission === 'granted') {
+                        sendPushNotification(data.alert, data.status);
+                    }
+                }
+            }
+
+            if (data.type === 'initial' && data.recent_alerts) {
+                showRecentAlerts(data.recent_alerts);
+            }
+
+            if (data.type === 'reset') {
+                document.getElementById('recent-alerts').innerHTML = '알림이 없습니다.';
+            }
+
+            if (data.type === 'auto_decay') {
+                updateStatus(data.status);
+            }
+        }
+
+        // Push 알림 전송
+        function sendPushNotification(alert, status) {
+            let title = '하수도 막힘 감지 시스템';
+            let options = {
+                body: alert.message,
+                icon: '/favicon.ico',
+                badge: '/favicon.ico',
+                vibrate: [200],
+                data: {
+                    level: alert.level,
+                    risk_score: status.risk_score,
+                    timestamp: new Date().toISOString()
+                }
+            };
+
+            // 알림 레벨에 따른 설정
+            if (alert.level === 'danger') {
+                title = '🚨 하수구 위험 경고!';
+                options.requireInteraction = true;
+                options.vibrate = [200, 100, 200, 100, 200];
+            } else if (alert.level === 'caution') {
+                title = '🟠 하수구 경고';
+                options.vibrate = [200, 100, 200];
+            } else if (alert.level === 'warning') {
+                title = '⚠️ 하수구 주의';
+                options.vibrate = [200];
+            }
+
+            new Notification(title, options);
+        }
+
         // 초기화
         document.addEventListener('DOMContentLoaded', function() {
+            // Service Worker 등록
+            registerServiceWorker();
+            
+            // 알림 권한 확인
+            checkNotificationPermission();
+            
             connectWebSocket();
 
             // 주기적 연결 상태 확인
