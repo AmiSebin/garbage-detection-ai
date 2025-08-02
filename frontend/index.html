@@ -501,56 +501,87 @@
         let lastUpdateTime = Date.now();
 
         function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.hostname}:8000/ws`);
-            
-            ws.onopen = function(event) {
-                console.log('WebSocket 연결됨');
-                document.getElementById('connection-status').innerHTML = '✅ 연결됨';
-                document.getElementById('connection-status').className = 'connection-status connected';
+            try {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 
-                if (reconnectInterval) {
-                    clearInterval(reconnectInterval);
-                    reconnectInterval = null;
-                }
+                ws = new WebSocket(`${protocol}//${window.location.hostname}:8000/ws`);
                 
-                addLog('🔗 서버 연결 성공');
-            };
-            
-            ws.onmessage = function(event) {
-                try {
-                    // ping/pong 메시지 처리
-                    if (event.data === "pong") {
-                        lastUpdateTime = Date.now();
-                        return;
+                ws.onopen = function(event) {
+                    console.log('WebSocket 연결됨');
+                    document.getElementById('connection-status').innerHTML = '✅ 연결됨';
+                    document.getElementById('connection-status').className = 'connection-status connected';
+                    
+                    if (reconnectInterval) {
+                        clearInterval(reconnectInterval);
+                        reconnectInterval = null;
                     }
                     
-                    // JSON 메시지 처리
-                    const data = JSON.parse(event.data);
-                    handleMessage(data);
-                    lastUpdateTime = Date.now();
-                } catch (error) {
-                    console.error('WebSocket 메시지 파싱 오류:', error);
-                    addLog('❌ 메시지 파싱 오류: ' + error.message);
-                }
-            };
-            
-            ws.onclose = function(event) {
-                console.log('WebSocket 연결 끊어짐');
-                document.getElementById('connection-status').innerHTML = '❌ 연결 끊어짐';
-                document.getElementById('connection-status').className = 'connection-status disconnected';
+                    addLog('🔗 서버 연결 성공');
+                    
+                    // 연결 성공시 현재 상태를 가져오기 위해 HTTP API 호출
+                    fetchInitialStatus();
+                };
                 
-                if (!reconnectInterval) {
-                    reconnectInterval = setInterval(connectWebSocket, 3000);
-                }
+                ws.onmessage = function(event) {
+                    try {
+                        // ping/pong 메시지 처리
+                        if (event.data === "pong") {
+                            lastUpdateTime = Date.now();
+                            return;
+                        }
+                        
+                        // JSON 메시지 처리
+                        const data = JSON.parse(event.data);
+                        console.log('수신된 WebSocket 메시지:', data);
+                        handleMessage(data);
+                        lastUpdateTime = Date.now();
+                    } catch (error) {
+                        console.error('WebSocket 메시지 파싱 오류:', error, '원본 데이터:', event.data);
+                        addLog('❌ 메시지 파싱 오류: ' + error.message);
+                    }
+                };
                 
-                addLog('⚠️ 서버 연결 끊어짐 - 재연결 시도 중...');
-            };
-            
-            ws.onerror = function(error) {
-                console.error('WebSocket 에러:', error);
-                addLog('❌ WebSocket 연결 오류');
-            };
+                ws.onclose = function(event) {
+                    console.log('WebSocket 연결 끊어짐, 코드:', event.code, '이유:', event.reason);
+                    document.getElementById('connection-status').innerHTML = '❌ 연결 끊어짐';
+                    document.getElementById('connection-status').className = 'connection-status disconnected';
+                    
+                    if (!reconnectInterval) {
+                        addLog('⚠️ 서버 연결 끊어짐 - 3초 후 재연결 시도...');
+                        reconnectInterval = setInterval(() => {
+                            addLog('🔄 재연결 시도 중...');
+                            connectWebSocket();
+                        }, 3000);
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket 에러:', error);
+                    addLog('❌ WebSocket 연결 오류 - 서버가 실행 중인지 확인하세요');
+                };
+                
+            } catch (error) {
+                console.error('WebSocket 생성 오류:', error);
+                addLog('❌ WebSocket 생성 실패: ' + error.message);
+            }
+        }
+        
+        // HTTP API로 초기 상태 가져오기
+        async function fetchInitialStatus() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/status`);
+                if (response.ok) {
+                    const status = await response.json();
+                    console.log('HTTP로 가져온 초기 상태:', status);
+                    updateStatus(status);
+                    addLog('📊 초기 상태 로드 완료');
+                } else {
+                    console.error('상태 조회 실패:', response.status);
+                }
+            } catch (error) {
+                console.error('상태 조회 오류:', error);
+                addLog('⚠️ 초기 상태 로드 실패');
+            }
         }
 
         function handleMessage(data) {
@@ -596,6 +627,11 @@
             if (data.type === 'reset') {
                 addLog(`[${now}] 🔄 시스템 초기화`);
                 document.getElementById('recent-alerts').innerHTML = '알림이 없습니다.';
+            }
+            
+            if (data.type === 'auto_decay') {
+                addLog(`[${now}] 📉 ${data.message}`);
+                updateStatus(data.status);
             }
         }
 

@@ -4,15 +4,16 @@
 # 다음 명령어로 실행
 # source venv/bin/activate && python garbage_detection.py
 
-from collections import defaultdict, deque
-import cv2
-import torch
-import requests
-import json
 import base64
 import time
+from collections import defaultdict, deque
 from datetime import datetime
+
+import cv2
+import requests
+import torch
 from ultralytics import YOLO
+
 
 class GarbageDetector:
     def __init__(self, model_path='yolo11s.pt', server_url="http://localhost:8000"):

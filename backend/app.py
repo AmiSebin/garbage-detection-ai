@@ -584,20 +584,33 @@ def calculate_risk_score_with_ai(detections: List[DetectionData]) -> tuple[float
         location_factor=env_factors['location_factor']
     )
     
-    if not detections:
-        # 감지가 없으면 위험도를 0으로 설정 (즉시 반영)
-        base_score = 0.0
+    # 최근 10초 이내의 감지만 사용 (실시간 반영 강화)
+    now = datetime.now()
+    recent_detections_only = []
+    for d in detections:
+        try:
+            det_time = datetime.fromisoformat(d.timestamp.replace('Z', '+00:00'))
+            seconds_ago = (now - det_time).total_seconds()
+            if seconds_ago <= 10:  # 10초 이내만 활성 상태로 간주
+                recent_detections_only.append(d)
+        except:
+            continue
+    
+    if not recent_detections_only:
+        # 최근 10초 내 감지가 없으면 위험도를 빠르게 감소
+        decay_rate = 10.0  # 더 빠른 감소
+        new_score = max(0.0, current_risk - decay_rate)
         
         ai_analysis = AIAnalysis(
             risk_assessment="low",
             confidence_level=0.9,
-            reasoning="감지된 쓰레기가 없어 안전한 상태입니다.",
+            reasoning="최근 10초 내 감지된 쓰레기가 없어 안전한 상태입니다.",
             recommendations=["정기적인 모니터링을 계속하세요."],
             false_positive_probability=0.0,
             trend_analysis="개선",
             severity_score=0.0
         )
-        return base_score, ai_analysis
+        return new_score, ai_analysis
     
     # 유효한 감지만 필터링
     valid_detections = [d for d in detections if is_valid_detection(d)]
@@ -1301,35 +1314,61 @@ async def update_frame(frame_data: dict):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """실시간 데이터 스트리밍"""
-    await websocket.accept()
-    connected_clients.append(websocket)
-    logger.info(f"새 클라이언트 연결. 총 연결: {len(connected_clients)}")
-
     try:
-        # 연결 즉시 현재 상태 전송
-        initial_data = {
-            "type": "initial",
-            "status": current_status,
-            "recent_detections": [d.model_dump() for d in list(recent_detections)[-5:]],
-            "recent_alerts": [a.model_dump() for a in list(recent_alerts)[:3]],
-            "ai_analysis": current_status.get("ai_analysis", {})
-        }
-        await websocket.send_text(json.dumps(initial_data, default=str))
+        await websocket.accept()
+        connected_clients.append(websocket)
+        logger.info(f"새 클라이언트 연결. 총 연결: {len(connected_clients)}")
 
-        # 연결 유지
+        # 연결 즉시 현재 상태 전송
+        try:
+            initial_data = {
+                "type": "initial",
+                "status": current_status,
+                "recent_detections": [d.model_dump() for d in list(recent_detections)[-5:]],
+                "recent_alerts": [a.model_dump() for a in list(recent_alerts)[:3]],
+                "ai_analysis": current_status.get("ai_analysis", {})
+            }
+            await websocket.send_text(json.dumps(initial_data, default=str))
+            logger.info("초기 데이터 전송 완료")
+        except Exception as e:
+            logger.error(f"초기 데이터 전송 오류: {e}")
+
+        # 연결 유지 루프
         while True:
-            message = await websocket.receive_text()
-            if message == "ping":
-                await websocket.send_text("pong")
+            try:
+                # 메시지 수신 (타임아웃 설정)
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                if message == "ping":
+                    await websocket.send_text("pong")
+                    logger.debug("ping-pong 응답 완료")
+                else:
+                    logger.debug(f"알 수 없는 메시지 수신: {message}")
+                    
+            except asyncio.TimeoutError:
+                # 30초 동안 메시지가 없으면 ping 전송
+                try:
+                    await websocket.send_text("ping")
+                    logger.debug("서버에서 ping 전송")
+                except:
+                    logger.warning("ping 전송 실패 - 연결 끊어짐")
+                    break
+            except WebSocketDisconnect:
+                logger.info("클라이언트가 연결을 끊었습니다")
+                break
+            except Exception as e:
+                logger.error(f"WebSocket 메시지 처리 오류: {e}")
+                break
 
     except WebSocketDisconnect:
-        if websocket in connected_clients:
-            connected_clients.remove(websocket)
-        logger.info(f"클라이언트 연결 해제. 남은 연결: {len(connected_clients)}")
+        logger.info("WebSocket 연결 해제됨")
     except Exception as e:
-        logger.error(f"WebSocket 오류: {e}")
+        logger.error(f"WebSocket 연결 오류: {e}")
+    finally:
+        # 정리 작업
         if websocket in connected_clients:
             connected_clients.remove(websocket)
+        logger.info(f"클라이언트 연결 정리 완료. 남은 연결: {len(connected_clients)}")
 
 # ==================== 헬스체크 ====================
 
@@ -1351,43 +1390,46 @@ async def periodic_risk_update():
     """주기적으로 위험도 업데이트하여 자동 감소 처리"""
     while True:
         try:
-            await asyncio.sleep(5.0)  # 5초마다 실행
-
-            # 위험도 자동 감소 처리 (더 엄격한 조건)
-            current_risk = current_status.get("risk_score", 0)
-            time_since_last = get_time_since_last_detection()
-
-            # 조건: 감지가 없고 + 마지막 감지로부터 30초 이상 경과 + 현재 위험도가 5보다 큰 경우
-            should_decay = (
-                len(recent_detections) == 0 or
-                (time_since_last >= 0.5 and current_risk > 5)  # 0.5분 = 30초
-            )
-
-            if should_decay and current_risk > 0:
-                previous_risk = current_risk
+            await asyncio.sleep(2.0)  # 2초마다 더 자주 실행
+            
+            # 오래된 감지 데이터 정리 (10초 이상 된 것들)
+            now = datetime.now()
+            old_detections = []
+            for detection in list(recent_detections):
+                try:
+                    det_time = datetime.fromisoformat(detection.timestamp.replace('Z', '+00:00'))
+                    seconds_ago = (now - det_time).total_seconds()
+                    if seconds_ago > 10:  # 10초 이상 된 감지
+                        old_detections.append(detection)
+                except:
+                    continue
+            
+            # 오래된 감지 제거
+            for old_detection in old_detections:
+                if old_detection in recent_detections:
+                    recent_detections.remove(old_detection)
+            
+            # 감지가 제거되었으면 위험도 재계산
+            if old_detections:
+                previous_risk = current_status.get("risk_score", 0)
                 previous_level = current_status.get("risk_level", "safe")
-
-                # 자연 감소 적용 (더 천천히)
-                decay_rate = 1.0  # 5초당 1% 감소 (기존보다 더 느림)
-                decay_amount = min(decay_rate, current_risk)  # 현재 위험도를 넘지 않도록
-
-                new_risk = max(0, current_risk - decay_amount)
-                current_status["risk_score"] = new_risk
-                current_status["risk_level"] = get_risk_level(new_risk)
-                current_status["pipe_status"] = get_pipe_status(current_status["risk_level"])
-
+                
+                # 현재 감지 목록으로 위험도 재계산
+                detections_list = list(recent_detections)
+                update_status(detections_list)
+                
                 current_level = current_status["risk_level"]
-
-                # 실제로 감소했고 레벨이 변경되었을 때만 알림
-                if new_risk < previous_risk and current_level != previous_level:
+                new_risk = current_status["risk_score"]
+                
+                # 위험도가 감소했거나 레벨이 변경되었을 때 브로드캐스트
+                if new_risk < previous_risk or current_level != previous_level:
                     broadcast_data = {
                         "type": "auto_decay",
                         "status": current_status,
-                        "message": f"쓰레기가 감지되지 않아 위험도가 자동으로 감소했습니다. ({time_since_last:.1f}분 경과)"
+                        "message": f"오래된 쓰레기 감지가 제거되어 위험도가 업데이트되었습니다. ({len(old_detections)}개 제거)"
                     }
                     await broadcast_to_clients(broadcast_data)
-                    logger.info(
-                        f"📉 자동 위험도 감소: {previous_risk:.1f}% → {new_risk:.1f}% ({current_level}) - {time_since_last:.1f}분 경과")
+                    logger.info(f"📉 감지 제거로 위험도 업데이트: {previous_risk:.1f}% → {new_risk:.1f}% ({len(old_detections)}개 제거)")
 
         except Exception as e:
             logger.error(f"백그라운드 업데이트 오류: {e}")
