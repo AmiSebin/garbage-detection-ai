@@ -1,5 +1,5 @@
 # 실행 전 라이브러리 설치 필요
-# pip install ultralytics opencv-python torch torchvision
+# pip install ultralytics opencv-python torch torchvision requests
 
 # 다음 명령어로 실행
 # source venv/bin/activate && python garbage_detection.py
@@ -7,10 +7,15 @@
 from collections import defaultdict, deque
 import cv2
 import torch
+import requests
+import json
+import base64
+import time
+from datetime import datetime
 from ultralytics import YOLO
 
 class GarbageDetector:
-    def __init__(self, model_path='yolo11s.pt'):
+    def __init__(self, model_path='yolo11s.pt', server_url="http://localhost:8000"):
 
         self.model = YOLO(model_path)
         self.cap = cv2.VideoCapture(0)
@@ -19,6 +24,11 @@ class GarbageDetector:
         
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Using device: {self.device}")
+        
+        # 서버 연결 설정
+        self.server_url = server_url
+        self.server_connected = False
+        self.test_server_connection()
         
         self.taco_classes = {
             0: 'Aluminium foil',
@@ -109,6 +119,72 @@ class GarbageDetector:
             'food_container': (255, 0, 0),
             'other': (128, 128, 128)
         }
+    
+    def test_server_connection(self):
+        """FastAPI 서버 연결 테스트"""
+        try:
+            response = requests.get(f"{self.server_url}/health", timeout=3)
+            if response.status_code == 200:
+                self.server_connected = True
+                print(f"✅ 서버 연결 성공: {self.server_url}")
+                print(f"📊 대시보드: {self.server_url}")
+            else:
+                print(f"❌ 서버 응답 오류: {response.status_code}")
+                self.server_connected = False
+        except Exception as e:
+            print(f"❌ 서버 연결 실패: {e}")
+            print(f"💡 서버를 먼저 실행하세요: python backend/app.py")
+            self.server_connected = False
+    
+    def send_detection_to_server(self, detection_data):
+        """감지 데이터를 FastAPI 서버로 전송"""
+        if not self.server_connected:
+            return False
+            
+        try:
+            response = requests.post(
+                f"{self.server_url}/detect",
+                json=detection_data,
+                timeout=2
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('significant_change', False):
+                    print(f"🚨 위험도 변화: {result.get('risk_score', 0):.1f}% ({result.get('risk_level', 'safe')})")
+                return result
+            else:
+                return False
+                
+        except requests.exceptions.Timeout:
+            return False
+        except Exception as e:
+            print(f"❌ 서버 전송 오류: {e}")
+            self.test_server_connection()
+            return False
+    
+    def send_frame_to_server(self, frame):
+        """현재 프레임을 서버로 전송 (비디오 스트리밍용)"""
+        if not self.server_connected:
+            return False
+            
+        try:
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ret:
+                return False
+            
+            frame_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            response = requests.post(
+                f"{self.server_url}/update_frame",
+                json={"frame": frame_base64},
+                timeout=0.5
+            )
+            
+            return response.status_code == 200
+            
+        except:
+            return False
     
     
     def update_tracking(self, current_detections):
@@ -207,10 +283,34 @@ class GarbageDetector:
                             class_name, category, color = self.get_class_info(class_id)
                             label = f"{category.upper()}: {class_name} ({confidence:.2f})"
                             current_detections.append(([x1, y1, x2, y2], confidence, class_id, class_name, label, category, color))
+                            
+                            # 서버로 감지 데이터 전송
+                            area = (x2 - x1) * (y2 - y1)
+                            detection_data = {
+                                "timestamp": datetime.now().isoformat(),
+                                "garbage_type": f"{category}_{class_name}",
+                                "confidence": float(confidence),
+                                "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                                "area": float(area),
+                                "location": "main_pipe"
+                            }
+                            self.send_detection_to_server(detection_data)
                         else:
                             model_class_name = self.model.names.get(class_id, f'Unknown_{class_id}')
                             label = f"OTHER: {model_class_name} ({confidence:.2f})"
                             current_detections.append(([x1, y1, x2, y2], confidence, class_id, model_class_name, label, 'other', (128, 128, 128)))
+                            
+                            # 서버로 감지 데이터 전송
+                            area = (x2 - x1) * (y2 - y1)
+                            detection_data = {
+                                "timestamp": datetime.now().isoformat(),
+                                "garbage_type": f"other_{model_class_name}",
+                                "confidence": float(confidence),
+                                "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                                "area": float(area),
+                                "location": "main_pipe"
+                            }
+                            self.send_detection_to_server(detection_data)
             
             stable_detections = self.update_tracking(current_detections)
             self.last_stable_detections = stable_detections
@@ -239,6 +339,13 @@ class GarbageDetector:
     def run(self):
         print("쓰레기 탐지를 시작합니다. ESC 키를 눌러 종료하세요.")
         print(f"모델: {self.model.ckpt_path}")
+        print("📋 사용법:")
+        print("   - ESC: 프로그램 종료")
+        print("   - R: 서버 재연결")
+        print("   - S: 서버 상태 확인")
+        
+        frame_count = 0
+        last_status_check = time.time()
         
         while True:
             ret, frame = self.cap.read()
@@ -247,18 +354,57 @@ class GarbageDetector:
                 break
             
             annotated_frame = self.detect_garbage(frame)
-            cv2.putText(annotated_frame, "Press ESC to exit", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            # 서버로 현재 프레임 전송 (웹 대시보드용)
+            if frame_count % 3 == 0:  # 3프레임마다 전송 (성능 최적화)
+                self.send_frame_to_server(annotated_frame)
+            
+            # 주기적 서버 상태 확인
+            if time.time() - last_status_check > 30:  # 30초마다
+                self.test_server_connection()
+                last_status_check = time.time()
+            
+            # 상태 정보 표시
+            status_text = f"Server: {'Connected' if self.server_connected else 'Disconnected'}"
+            cv2.putText(annotated_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(annotated_frame, "Press ESC to exit", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
             cv2.imshow('Garbage Detection', annotated_frame)
             
-            if cv2.waitKey(1) & 0xFF == 27:
+            # 키 입력 처리
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:  # ESC 키
                 break
+            elif key == ord('r') or key == ord('R'):  # R 키
+                print("🔄 서버 재연결 시도...")
+                self.test_server_connection()
+            elif key == ord('s') or key == ord('S'):  # S 키
+                print("📊 서버 상태 확인...")
+                self.test_server_connection()
+            
+            frame_count += 1
         
         self.cap.release()
         cv2.destroyAllWindows()
         print("프로그램이 종료되었습니다.")
 
 def main():
-    detector = GarbageDetector('yolo11m.pt')
+    print("🚰 하수도 막힘 감지 AI 시스템")
+    print("=" * 50)
+    
+    # 모델 선택
+    model_path = 'yolo11m.pt'  # 기본 모델
+    
+    # 커스텀 모델이 있다면 사용
+    import os
+    if os.path.exists('best.pt'):
+        model_path = 'best.pt'
+        print("🎯 커스텀 모델을 사용합니다: best.pt")
+    else:
+        print("🔧 기본 YOLO 모델을 사용합니다: yolo11m.pt")
+    
+    # 감지기 초기화 및 실행
+    detector = GarbageDetector(model_path)
     detector.run()
 
 if __name__ == "__main__":
